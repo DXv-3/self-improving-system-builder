@@ -44,6 +44,29 @@ jobs:
         run: python3 scripts/generate_human_report.py examples/bundle_forensics_case
         continue-on-error: true
 
+      - name: Apply trust updates if enough samples
+        run: |
+          SAMPLE_COUNT=$(python3 -c "
+import json, sys
+from pathlib import Path
+from collections import Counter
+p = Path('learning_memory.jsonl')
+if not p.exists():
+    print(0)
+    sys.exit(0)
+lines = [l for l in p.read_text().splitlines() if l.strip()]
+cats = Counter(json.loads(l).get('category', 'unknown') for l in lines)
+print(min(cats.values()) if cats else 0)
+")
+          echo "Min samples per category: $SAMPLE_COUNT"
+          if [ "$SAMPLE_COUNT" -ge 5 ]; then
+            echo "Running trust_update --apply"
+            python3 scripts/trust_update.py --apply
+          else
+            echo "Trust update skipped: only $SAMPLE_COUNT min samples per category (need 5)"
+          fi
+        continue-on-error: true
+
       - name: Commit cycle artifacts
         run: |
           git config user.name  "self-improving-cycle[bot]"
