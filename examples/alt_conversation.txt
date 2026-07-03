@@ -1,0 +1,6 @@
+User: I have a messy project that started as an idea in chat, turned into a bunch of scripts, and now I don't know what's built vs broken.
+Assistant: Walk me through the repo structure and I'll trace the real execution chain.
+User: Here's the tree: scripts/, tests/, examples/, no README.
+Assistant: Start with the entrypoint. What runs first?
+User: run_operator_layer.py I think.
+Assistant: Good. I'll reconstruct the arc, classify what's proven vs scaffolded, and emit a skill file that captures the operating pattern so you can reuse it on the next project without relying on this transcript.
