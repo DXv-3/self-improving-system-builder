@@ -1,5 +1,5 @@
 # System Run Report
-Generated: 2026-07-03 23:19
+Generated: 2026-07-03 23:41
 Case: /home/runner/work/self-improving-system-builder/self-improving-system-builder/examples/bundle_forensics_case
 
 **Enforcement Prompt:** Active (v1.0.0)
