@@ -1,1 +1,29 @@
-{"checks": [{"check_id": "P1", "kind": "file_exists", "path": "proof_runtime.json"}]}
+{
+  "checks": [
+    {
+      "check_id": "PROOF-01",
+      "kind": "file_exists",
+      "path": "proof_runtime.json"
+    },
+    {
+      "check_id": "PROOF-02",
+      "kind": "file_exists",
+      "path": "cost_tracking_stub.py"
+    },
+    {
+      "check_id": "PROOF-03",
+      "kind": "file_exists",
+      "path": "memory_persistence_stub.py"
+    },
+    {
+      "check_id": "PROOF-04",
+      "kind": "file_exists",
+      "path": "claim_downgrades/BFA-003.md"
+    },
+    {
+      "check_id": "ENFORCE-01",
+      "kind": "file_exists",
+      "path": "enforcement_active.json"
+    }
+  ]
+}

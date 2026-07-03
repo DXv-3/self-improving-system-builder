@@ -1,7 +1,12 @@
 {
-  "artifact_name": "CONDUCTOR_PROTOCOL_v1_COMPLETE_BUNDLE.md",
-  "timestamp": "2026-07-03T19:40:00+00:00",
-  "drift_count": 3,
-  "items": ["CLAIM-001: required, but evidence class is unverified","CLAIM-002: required, but evidence class is reference_only","CLAIM-003: required, but evidence class is contradicted"],
-  "verdict": "BLOCKED"
+  "artifact_name": "bundle_forensics_example",
+  "timestamp": "2026-07-03T00:00:00Z",
+  "drift_count": 4,
+  "items": [
+    "C001: proof_gate claim is unverified — no runtime evidence",
+    "C002: cost_control claim is reference_only — no runtime evidence",
+    "C003: background_collection claim is reference_only — no runtime evidence",
+    "C004: memory_persistence claim is unverified — no runtime evidence"
+  ],
+  "verdict": "HOLD"
 }

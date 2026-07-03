@@ -1,4 +1,11 @@
 {
-  "artifact_name": "CONDUCTOR_PROTOCOL_v1_COMPLETE_BUNDLE.md",
-  "evidence_items": [{"evidence_id":"EVID-001","category":"proof_gate","status":"missing","sources":[{"kind":"video","ref":"file:9"}],"details":"No proof_dashboard output observed.","tests":[]}]
+  "artifact_name": "bundle_forensics_example",
+  "evidence_items": [
+    {
+      "claim_id": "C005",
+      "evidence_class": "compiler_inferred",
+      "observed": "Config struct type-checks pass. Load path not confirmed at runtime.",
+      "source": "type_checker"
+    }
+  ]
 }

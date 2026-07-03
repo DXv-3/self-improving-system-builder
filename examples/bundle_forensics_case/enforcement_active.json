@@ -1,0 +1,23 @@
+{
+  "version": "1.0.0",
+  "active": true,
+  "activated_at": "2026-07-03T00:00:00Z",
+  "rules": {
+    "evidence_classification": "required_on_all_claims",
+    "idkwidk_gates": "required_before_completion",
+    "auto_execute_threshold": 4,
+    "no_recommendations_without_implementation": true,
+    "roadmap_required": true,
+    "github_push_required": true,
+    "loop_termination": "only_when_no_honest_next_move_exists"
+  },
+  "blind_spot_checks": [
+    "IGNITION_GAP",
+    "MEMORY_GAP",
+    "PROOF_GAP",
+    "OPTIONALITY_TRAP",
+    "INTERFACE_GAP",
+    "CALIBRATION_GAP",
+    "SKILL_GENERALIZATION_GAP"
+  ]
+}

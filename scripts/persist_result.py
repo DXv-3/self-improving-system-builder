@@ -3,46 +3,53 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 from datetime import datetime, timezone
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import load_json, save_json, append_jsonl
 
 
 def _record_to_learning_memory(queue: dict, result: dict, case_dir: Path) -> None:
     """
     Wire learning_memory.record_cycle_outcome() after every persist.
-    Closes the MEMORY_GAP: cross-run knowledge now accumulates.
+    Closes MEMORY_GAP: cross-run knowledge now accumulates.
+    Failures are logged to execution_log.jsonl rather than swallowed silently.
     """
     try:
         from learning_memory import record_cycle_outcome
         completed = [a for a in queue['actions'] if a.get('status') == 'completed']
         blocked   = [a for a in queue['actions'] if a.get('status') in {'blocked', 'failed'}]
-        # blocker_patterns: list of {action_id, label, notes}
+
         blocker_patterns = [
             {
                 'action_id': b['action_id'],
-                'label': b.get('blocker_label', 'unknown'),
-                'notes': b.get('notes', ''),
+                'label':     b.get('blocker_label', 'unknown'),
+                'notes':     b.get('notes', ''),
             }
             for b in blocked
         ]
-        # successful follow-up types from completed actions
         successful_followup_types = list({
             a.get('execution_type', '') for a in completed
             if 'SPINNER' in a.get('action_id', '') or 'FOLLOWUP' in a.get('action_id', '')
         })
-        # claim resolutions: completed actions mapped to their source claim
         claim_resolutions = [
-            {'action_id': a['action_id'], 'category': a.get('category', ''), 'source': a.get('source', '')}
+            {
+                'action_id': a['action_id'],
+                'category':  a.get('category', ''),
+                'source':    a.get('source', ''),
+            }
             for a in completed
         ]
-        # retry strategy from file if present
-        retry_path = case_dir / 'retry_strategy.json'
         retry_strategy = 'unknown'
+        retry_path = case_dir / 'retry_strategy.json'
         if retry_path.exists():
-            rs = load_json(str(retry_path))
-            retry_strategy = rs.get('strategy', 'unknown')
+            try:
+                retry_strategy = load_json(str(retry_path)).get('strategy', 'unknown')
+            except Exception:
+                pass
 
-        cycle_id = f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}-{result.get('action_id', 'none')}"
+        cycle_id = (
+            f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}"
+            f"-{result.get('action_id', 'none')}"
+        )
         record_cycle_outcome(
             cycle_id=cycle_id,
             blocker_patterns=blocker_patterns,
@@ -51,13 +58,22 @@ def _record_to_learning_memory(queue: dict, result: dict, case_dir: Path) -> Non
             retry_strategy=retry_strategy,
             claim_resolutions=claim_resolutions,
         )
-    except Exception as e:
-        # learning_memory is an enhancement, never block execution on it
-        pass
+    except Exception as exc:
+        # Log the failure instead of silently swallowing it.
+        # This makes MEMORY_GAP failures visible in the audit trail.
+        append_jsonl(
+            case_dir / 'execution_log.jsonl',
+            {
+                'event':   'learning_memory_error',
+                'error':   str(exc),
+                'action':  result.get('action_id', 'unknown'),
+                'ts':      datetime.now(timezone.utc).isoformat(),
+            }
+        )
 
 
-def main(queue_path, verified_result_path, case_dir):
-    case = Path(case_dir)
+def main(queue_path: str, verified_result_path: str, case_dir_str: str) -> None:
+    case   = Path(case_dir_str)
     case.mkdir(parents=True, exist_ok=True)
     queue  = load_json(queue_path)
     result = load_json(verified_result_path)
@@ -88,7 +104,7 @@ def main(queue_path, verified_result_path, case_dir):
     ] or ['- None currently blocked.']
     (case / 'next_blockers.md').write_text('\n'.join(lines) + '\n')
 
-    # Wire learning memory — MEMORY_GAP now closed
+    # Wire: MEMORY_GAP now closed — exceptions are logged, never silently swallowed
     _record_to_learning_memory(queue, result, case)
 
 

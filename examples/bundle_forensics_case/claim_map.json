@@ -1,8 +1,45 @@
 {
-  "artifact_name": "CONDUCTOR_PROTOCOL_v1_COMPLETE_BUNDLE.md",
+  "artifact_name": "bundle_forensics_example",
   "claims": [
-    {"claim_id":"CLAIM-001","text":"proof_dashboard executed on the divergent master","category":"proof_gate","required_for_production":true,"evidence_class":"unverified","notes":"No runtime proof in recordings."},
-    {"claim_id":"CLAIM-002","text":"Background collection is active","category":"background_collection","required_for_production":true,"evidence_class":"reference_only","notes":"No process output."},
-    {"claim_id":"CLAIM-003","text":"Cost cap enforced per session","category":"cost_control","required_for_production":true,"evidence_class":"contradicted","notes":"Audit disproved cost tracking."}
+    {
+      "claim_id": "C001",
+      "text": "The system has a runtime proof gate that validates claim evidence before production promotion",
+      "category": "proof_gate",
+      "required_for_production": true,
+      "evidence_class": "unverified",
+      "notes": "No proof_runtime.json found — claim is unverified"
+    },
+    {
+      "claim_id": "C002",
+      "text": "The system tracks costs via accrue_cost() and prevents budget overrun",
+      "category": "cost_control",
+      "required_for_production": true,
+      "evidence_class": "reference_only",
+      "notes": "Mentioned in README but accrue_cost() is a pass statement"
+    },
+    {
+      "claim_id": "C003",
+      "text": "Background collection runs continuously and feeds into the claim map",
+      "category": "background_collection",
+      "required_for_production": false,
+      "evidence_class": "reference_only",
+      "notes": "Cited in docs, no background process observed in runtime"
+    },
+    {
+      "claim_id": "C004",
+      "text": "Execution traces are persisted to disk and survive process restart",
+      "category": "memory_persistence",
+      "required_for_production": true,
+      "evidence_class": "unverified",
+      "notes": "persist_trace() not found in codebase — pure assertion"
+    },
+    {
+      "claim_id": "C005",
+      "text": "Configuration is loaded dynamically from environment at startup",
+      "category": "config_loading",
+      "required_for_production": true,
+      "evidence_class": "compiler_inferred",
+      "notes": "Config struct correct by type rules but load path not observed at runtime"
+    }
   ]
 }
