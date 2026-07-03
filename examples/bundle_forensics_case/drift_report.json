@@ -1,0 +1,7 @@
+{
+  "artifact_name": "CONDUCTOR_PROTOCOL_v1_COMPLETE_BUNDLE.md",
+  "timestamp": "2026-07-03T19:40:00+00:00",
+  "drift_count": 3,
+  "items": ["CLAIM-001: required, but evidence class is unverified","CLAIM-002: required, but evidence class is reference_only","CLAIM-003: required, but evidence class is contradicted"],
+  "verdict": "BLOCKED"
+}

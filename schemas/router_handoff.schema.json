@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "router_handoff", "type": "object",
+  "required": ["task","mode","actions"],
+  "properties": {
+    "task":{"type":"string"}, "mode":{"type":"string","enum":["preview","execute"]},
+    "actions":{"type":"array","items":{"$ref":"action.schema.json"}},
+    "source":{"type":"string"}, "notes":{"type":"string"}
+  }
+}

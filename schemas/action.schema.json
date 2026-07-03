@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "forward_executor_action",
+  "type": "object",
+  "required": ["action_id","title","category","priority","risk_level","execution_type","proof_of_done","status"],
+  "properties": {
+    "action_id": {"type":"string"}, "title": {"type":"string"},
+    "source": {"type":"string"}, "category": {"type":"string"},
+    "priority": {"type":"number"}, "leverage_score": {"type":"number","default":0},
+    "unblock_power": {"type":"number","default":0}, "proof_value": {"type":"number","default":0},
+    "reuse_value": {"type":"number","default":0},
+    "risk_level": {"type":"number","minimum":0,"maximum":10},
+    "dependencies": {"type":"array","items":{"type":"string"},"default":[]},
+    "executable_now": {"type":"boolean","default":true},
+    "execution_type": {"type":"string","enum":["command","file_write","python","manual"]},
+    "command_or_patch": {"type":"string"}, "proof_of_done": {"type":"string"},
+    "rollback": {"type":"string"}, "notes": {"type":"string"},
+    "status": {"type":"string","enum":["pending","running","completed","blocked","failed","skipped"]}
+  }
+}

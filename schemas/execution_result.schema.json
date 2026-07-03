@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "forward_executor_result",
+  "type": "object",
+  "required": ["action_id","status","verified","timestamp"],
+  "properties": {
+    "action_id":{"type":"string"},
+    "status":{"type":"string","enum":["completed","blocked","failed","skipped"]},
+    "verified":{"type":"boolean"}, "timestamp":{"type":"string"},
+    "stdout":{"type":"string"}, "stderr":{"type":"string"},
+    "returncode":{"type":"integer"}, "proof_observed":{"type":"boolean"},
+    "blocker_reason":{"type":"string"}
+  }
+}

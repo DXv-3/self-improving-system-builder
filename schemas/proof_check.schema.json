@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "proof_check", "type": "object", "required": ["check_id","kind"],
+  "properties": {
+    "check_id":{"type":"string"},
+    "kind":{"type":"string","enum":["file_exists","text_contains","json_field_equals","command_exit_zero"]},
+    "path":{"type":"string"}, "needle":{"type":"string"},
+    "json_path":{"type":"array","items":{"type":["string","integer"]}},
+    "expected":{}, "command":{"type":"string"}
+  }
+}

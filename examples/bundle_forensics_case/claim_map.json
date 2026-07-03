@@ -1,0 +1,8 @@
+{
+  "artifact_name": "CONDUCTOR_PROTOCOL_v1_COMPLETE_BUNDLE.md",
+  "claims": [
+    {"claim_id":"CLAIM-001","text":"proof_dashboard executed on the divergent master","category":"proof_gate","required_for_production":true,"evidence_class":"unverified","notes":"No runtime proof in recordings."},
+    {"claim_id":"CLAIM-002","text":"Background collection is active","category":"background_collection","required_for_production":true,"evidence_class":"reference_only","notes":"No process output."},
+    {"claim_id":"CLAIM-003","text":"Cost cap enforced per session","category":"cost_control","required_for_production":true,"evidence_class":"contradicted","notes":"Audit disproved cost tracking."}
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "forward_executor_action_queue",
+  "type": "object",
+  "required": ["artifact_name","actions"],
+  "properties": {
+    "artifact_name": {"type":"string"},
+    "actions": {"type":"array","items":{"$ref":"action.schema.json"}}
+  }
+}

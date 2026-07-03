@@ -1,0 +1,17 @@
+{
+  "task": "Promote conductor bundle only if runtime truth exists",
+  "mode": "execute",
+  "source": "operator-router",
+  "notes": "Seed handoff to forward executor.",
+  "actions": [{
+    "action_id": "ROUTER-001", "title": "Create safe placeholder proof note",
+    "source": "router_preview", "category": "integration", "priority": 7,
+    "leverage_score": 4, "unblock_power": 3, "proof_value": 2, "reuse_value": 3,
+    "risk_level": 1, "dependencies": [], "executable_now": true,
+    "execution_type": "file_write",
+    "command_or_patch": "router_note.txt::router handoff executed",
+    "proof_of_done": "router_note.txt exists",
+    "rollback": "delete router_note.txt", "status": "pending",
+    "notes": "Safe smoke action from router."
+  }]
+}
