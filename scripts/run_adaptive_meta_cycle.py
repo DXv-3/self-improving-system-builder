@@ -1,41 +1,125 @@
 #!/usr/bin/env python3
+"""
+run_adaptive_meta_cycle.py
+
+Full adaptive cycle:
+  reconcile -> patch -> score -> loop -> classify blockers
+  -> approval policy -> split follow-ups -> loop follow-ups
+  -> retry strategy -> verify proof -> generate human report
+
+Usage:
+  python3 scripts/run_adaptive_meta_cycle.py <case_dir>
+"""
 from __future__ import annotations
-import json, shutil, subprocess, sys
+import json, subprocess, sys
 from pathlib import Path
+from datetime import datetime, timezone
 
-def run(cmd):
-    return subprocess.run(cmd,check=True,capture_output=True,text=True)
+SCRIPTS = Path(__file__).resolve().parent
 
-def main(case_dir):
-    case=Path(case_dir)
-    scripts=str(Path(__file__).resolve().parent)
-    report={'case_dir':str(case),'steps':[]}
-    run(['python3',f'{scripts}/run_full_meta_cycle.py',str(case)])
-    report['steps'].append('run_full_meta_cycle')
-    report['initial_report']=json.loads((case/'full_meta_cycle_report.json').read_text())
-    blocker_report=case/'blocker_report.json'
-    if blocker_report.exists():
-        run(['python3',f'{scripts}/approval_policy.py',str(blocker_report),str(case/'approval_decisions.json')])
-        report['steps'].append('approval_policy')
-        run(['python3',f'{scripts}/split_risky_actions.py',str(case/'blocked_actions.json'),str(blocker_report),str(case/'followup_queue.json')])
-        report['steps'].append('split_risky_actions')
-        queue=case/'action_queue.json'
-        if queue.exists() and not (case/'action_queue.initial.json').exists():
-            shutil.copy2(queue,case/'action_queue.initial.json')
-        shutil.copy2(case/'followup_queue.json',queue)
-        run(['python3',f'{scripts}/score_actions.py',str(queue),str(queue)]); report['steps'].append('score_actions_followups')
-        run(['python3',f'{scripts}/loop_until_blocked.py',str(case),'10']); report['steps'].append('loop_until_blocked_followups')
-        run(['python3',f'{scripts}/retry_strategy.py',str(case/'approval_decisions.json'),str(case/'loop_summary.json'),str(case/'retry_strategy.json')])
-        report['steps'].append('retry_strategy')
-        report['approval_decisions']=json.loads((case/'approval_decisions.json').read_text())
-        report['retry_strategy']=json.loads((case/'retry_strategy.json').read_text())
-    if (case/'proof_checks.json').exists():
-        run(['python3',f'{scripts}/verify_proof.py',str(case/'proof_checks.json'),str(case),str(case/'adaptive_proof_report.json')])
-        report['steps'].append('verify_proof')
-        report['adaptive_proof_report']=json.loads((case/'adaptive_proof_report.json').read_text())
-    report['final_summary']=json.loads((case/'loop_summary.json').read_text())
-    (case/'adaptive_meta_cycle_report.json').write_text(json.dumps(report,indent=2))
-    print(json.dumps(report,indent=2))
+
+def run(cmd: list, cwd: str | None = None, check: bool = False) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, capture_output=True, text=True, check=check, cwd=cwd)
+
+
+def step(label: str, cmd: list, case_dir: str) -> bool:
+    print(f"[adaptive] {label}")
+    r = run(cmd, cwd=case_dir)
+    if r.returncode != 0:
+        print(f"  WARNING ({label}): {r.stderr.strip()[:200]}")
+        return False
+    return True
+
+
+def script(name: str) -> str:
+    return str(SCRIPTS / name)
+
+
+def main(case_dir_str: str) -> None:
+    case_dir = Path(case_dir_str)
+    case_dir.mkdir(parents=True, exist_ok=True)
+    cd = str(case_dir)
+    q  = str(case_dir / 'action_queue.json')
+    ts = datetime.now(timezone.utc).isoformat()
+
+    steps_run = []
+
+    def s(label, cmd):
+        ok = step(label, cmd, cd)
+        steps_run.append({'label': label, 'ok': ok})
+        return ok
+
+    # Core pipeline
+    s('reconcile',         ['python3', script('reconcile_with_bundle_forensics.py'),
+                             str(case_dir/'claim_map.json'),
+                             str(case_dir/'runtime_evidence.json'),
+                             str(case_dir/'drift_report.json'), q])
+    s('generate_patches',  ['python3', script('generate_patch_from_claim.py'),
+                             str(case_dir/'claim_map.json'),
+                             str(case_dir/'patch_specs')])
+    s('apply_patches',     ['python3', script('auto_patch.py'),
+                             str(case_dir/'patch_specs'), cd])
+    s('score',             ['python3', script('score_actions.py'), q, q])
+    s('loop',              ['python3', script('loop_until_blocked.py'), cd, '25'])
+    s('classify_blockers', ['python3', script('blocker_classifier.py'),
+                             str(case_dir/'blocked_actions.json'),
+                             str(case_dir/'blocker_report.json')])
+    s('approval_policy',   ['python3', script('approval_policy.py'),
+                             str(case_dir/'blocker_report.json'),
+                             str(case_dir/'approval_decisions.json')])
+    s('split_risky',       ['python3', script('split_risky_actions.py'),
+                             str(case_dir/'blocked_actions.json'),
+                             str(case_dir/'blocker_report.json'),
+                             str(case_dir/'followup_queue.json')])
+
+    # Merge follow-up queue into main queue if it exists
+    followup_path = case_dir / 'followup_queue.json'
+    if followup_path.exists():
+        try:
+            main_q  = json.loads((case_dir / 'action_queue.json').read_text())
+            followup = json.loads(followup_path.read_text())
+            fu_actions = followup.get('actions', followup if isinstance(followup, list) else [])
+            existing_ids = {a['action_id'] for a in main_q.get('actions', [])}
+            new_actions = [a for a in fu_actions if a['action_id'] not in existing_ids]
+            main_q.setdefault('actions', []).extend(new_actions)
+            (case_dir / 'action_queue.json').write_text(json.dumps(main_q, indent=2))
+            print(f"[adaptive] Merged {len(new_actions)} follow-up actions into queue")
+        except Exception as e:
+            print(f"[adaptive] WARNING: could not merge followup queue: {e}")
+
+    s('score_followups',   ['python3', script('score_actions.py'), q, q])
+    s('loop_followups',    ['python3', script('loop_until_blocked.py'), cd, '15'])
+    s('retry_strategy',    ['python3', script('retry_strategy.py'),
+                             str(case_dir/'approval_decisions.json'),
+                             str(case_dir/'loop_summary.json'),
+                             str(case_dir/'retry_strategy.json')])
+
+    # Proof verification
+    proof_checks = case_dir / 'proof_checks.json'
+    if proof_checks.exists():
+        s('verify_proof',  ['python3', script('verify_proof.py'),
+                             str(proof_checks), cd,
+                             str(case_dir/'adaptive_proof_report.json')])
+
+    # Generate human-readable report (closes INTERFACE_GAP)
+    s('human_report',      ['python3', script('generate_human_report.py'), cd])
+
+    # Write cycle report
+    report = {
+        'artifact_name': 'adaptive_meta_cycle_report',
+        'timestamp': ts,
+        'case_dir': cd,
+        'steps': steps_run,
+        'succeeded': sum(1 for s in steps_run if s['ok']),
+        'failed':    sum(1 for s in steps_run if not s['ok']),
+    }
+    (case_dir / 'adaptive_meta_cycle_report.json').write_text(json.dumps(report, indent=2))
+    print(f"[adaptive] Done. {report['succeeded']}/{len(steps_run)} steps succeeded.")
+    print(f"[adaptive] Human report -> {case_dir}/REPORT.md")
+
 
 if __name__ == '__main__':
+    if len(sys.argv) < 2:
+        print('Usage: python3 run_adaptive_meta_cycle.py <case_dir>')
+        sys.exit(1)
     main(sys.argv[1])

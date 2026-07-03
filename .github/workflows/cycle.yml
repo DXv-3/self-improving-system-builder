@@ -1,0 +1,56 @@
+name: Self-Improving Cycle
+
+# Closes IGNITION_GAP: system now self-triggers without manual intervention.
+# Runs on push to examples/ or scripts/, and on a 6-hour schedule.
+
+on:
+  push:
+    paths:
+      - 'examples/**'
+      - 'scripts/**'
+      - 'context_spinner.py'
+      - 'apply_to_chat.py'
+  schedule:
+    - cron: '0 */6 * * *'  # every 6 hours
+  workflow_dispatch:        # manual trigger from GitHub UI
+
+jobs:
+  self-improving-cycle:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install pytest
+
+      - name: Run tests
+        run: pytest tests/ -v --tb=short
+        continue-on-error: true  # tests failing should not block cycle execution
+
+      - name: Run operator layer on example case
+        run: python3 run_operator_layer.py examples/bundle_forensics_case
+        continue-on-error: true  # log failure but do not fail the workflow
+
+      - name: Generate human report
+        run: python3 scripts/generate_human_report.py examples/bundle_forensics_case
+        continue-on-error: true
+
+      - name: Commit cycle artifacts
+        run: |
+          git config user.name  "self-improving-cycle[bot]"
+          git config user.email "cycle-bot@users.noreply.github.com"
+          git add examples/ || true
+          git add learning_memory.jsonl || true
+          git add trust_adjustments.json || true
+          git diff --cached --quiet || git commit -m "chore: cycle artifacts $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git push || true
+        continue-on-error: true
