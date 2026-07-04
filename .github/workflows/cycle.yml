@@ -67,6 +67,13 @@ print(min(cats.values()) if cats else 0)
           fi
         continue-on-error: true
 
+      - name: Sync learning memory to the-brain
+        run: python3 scripts/brain_sync.py --dry-run
+        # Runs as dry-run until brain.db exists at ../the-brain/brain.db.
+        # Switch to: python3 scripts/brain_sync.py
+        # once the-brain repo has a populated brain.db.
+        continue-on-error: true
+
       - name: Commit cycle artifacts
         run: |
           git config user.name  "self-improving-cycle[bot]"
