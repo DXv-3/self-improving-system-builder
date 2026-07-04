@@ -1,12 +1,16 @@
 # RESUME.md
 
-## What I Was Doing
-Completed the Self-Improving System Builder v1.0.0. All IDKWIDK action items resolved including property-based testing (built using stdlib random, no pip dependency). Action plan at 100% completion.
+## What Was Being Done
+Self-Improving System Builder v1.0.0 completed and pushed to GitHub at:
+https://github.com/DXv-3/self-improving-system-builder
 
 ## What's Next
-System is complete. Run a fresh IDKWIDK audit to find new blind spots, or use the system on a new project.
+- Run `make test` to verify the system is intact after cloning
+- Run a fresh IDKWIDK audit to find new blind spots
+- Use `session-open.sh` before starting any new task in this project
 
 ## Where Things Are
-- scripts/ - 10 executable scripts (routing, execution, learning loop)
-- tests/ - 4 test suites (conflict, smoke, skill_direct, property-based)
-- idkwidk-store/ - action plan data
+- `scripts/` — 10 executable scripts (routing, execution, learning loop)
+- `tests/` — 4 test suites (conflict, smoke, skill_direct, property-based)
+- `idkwidk-action-plan.py` — audit-to-action-plan converter
+- `skills/` — 2 reusable skill.md operating manuals
