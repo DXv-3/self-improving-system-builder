@@ -1,53 +1,57 @@
 # Self-Improving System Builder v1.0.0
 
-A trigger-routed, self-improving task dispatcher with a 7-gate audit protocol, safe/rollback execution, reliability learning loop, and 4-tier test suite.
+A complete, tested, and audited system for routing tasks to the best available skill,
+executing safely with rollback, learning from outcomes, and packaging reusable
+operating manuals (skill.md) for future agents.
 
 ## Quick Start
 
 ```bash
 cd self-improving-system-builder
-make test        # Run all 4 test suites
-make lint        # Syntax check every script
-source session-open.sh  # Activate IDKWIDK audit protocol
+make test        # runs all 4 test suites
+make lint        # syntax-checks every script
+source session-open.sh  # activates IDKWIDK audit protocol
 ```
 
-## What's Inside
+## Structure
 
-| Path | Purpose |
-|------|---------|
-| `scripts/route-task.py` | Scores registry skills against a task, picks execution mode |
-| `scripts/execute-plan-safe.py` | Runs the plan with rollback + risk-flag gating |
-| `scripts/save-execution-result.sh` | Appends outcome to execution-history.ndjson |
-| `scripts/rebuild-reliability.py` | Recomputes reliability scores from history |
-| `scripts/mine-recipes.py` | Promotes repeated shell-wins to skill candidates |
-| `scripts/detect-skill-conflicts.py` | Finds trigger collisions across skills |
-| `scripts/import-existing-skill.py` | Parses SKILL.md, scans scripts, detects side effects |
-| `scripts/render-registry-summary.py` | Human-readable registry stats |
-| `scripts/build-unified-registry.sh` | Scans all skill sources into one registry.json |
-| `scripts/run-router-cycle.sh` | Glue: route -> execute -> save -> rebuild -> mine |
-| `tests/test_conflict_detection.py` | Behavioral test: trigger collision detection |
-| `tests/test_smoke.py` | End-to-end happy path |
-| `tests/test_skill_direct.py` | High-confidence skill_direct execution path |
-| `tests/test_property_based.py` | stdlib-only fuzz test, 200 iterations, no pip deps |
-| `idkwidk-action-plan.py` | 7-gate audit -> tracked action plan |
-| `track-audit.py` | Append-only audit history log |
-| `session-open.sh` | Activates IDKWIDK protocol by walking up directory tree |
-| `IDKWIDK.md` | 7-gate definitions |
-| `RESUME.md` | Session continuity notes |
+```
+./
+├── README.md                        # this file
+├── IDEAS.md                         # everything discussed, nothing lost
+├── .gitignore
+├── self-improving-system-builder/
+│   ├── IDKWIDK.md                   # 7-gate audit protocol definition
+│   ├── Makefile                     # test / lint / audit targets
+│   ├── README.md
+│   ├── RESUME.md                    # session continuity — pick up cold
+│   ├── idkwidk-action-plan.py       # audit → tracked action plan
+│   ├── session-open.sh              # activate audit protocol
+│   ├── test-idkwidk.py              # verify protocol files present
+│   ├── track-audit.py               # append-only audit history
+│   ├── scripts/
+│   │   ├── route-task.py            # score candidates, decide execution mode
+│   │   ├── execute-plan-safe.py     # run plan with rollback + risk gating
+│   │   ├── save-execution-result.sh # append outcome to history
+│   │   ├── rebuild-reliability.py   # recompute reliability from history
+│   │   ├── mine-recipes.py          # promote shell-wins to skill candidates
+│   │   ├── detect-skill-conflicts.py# find trigger collisions
+│   │   ├── import-existing-skill.py # parse SKILL.md + detect side effects
+│   │   ├── render-registry-summary.py
+│   │   ├── build-unified-registry.sh
+│   │   └── run-router-cycle.sh      # glue: route→execute→save→rebuild→mine
+│   └── tests/
+│       ├── test_conflict_detection.py
+│       ├── test_smoke.py
+│       ├── test_skill_direct.py
+│       └── test_property_based.py   # stdlib-only, no pip, 200 iterations
+└── skills/
+    ├── self-improving-system-builder.md   # reusable operating manual
+    └── idkwidk-audit-protocol.md          # reusable audit skill
+```
 
-## Architecture
-
-### Scoring (route-task.py)
-- `+1.5` per matched trigger (capped at 4.0), `-2.0` no triggers, `-2.0` no scripts
-- `+2.0` reliable, `-3.0` bypass, `-0.5` each risky side effect
-- `>= 6.0` → skill_direct | `>= 3.0` → skill_chain | else → shell_direct
-
-### Learning Loop
-1. Save outcome → `execution-history.ndjson`
-2. Rebuild reliability from history (unknown / reliable / needs_wrapper / bypass)
-3. Mine recipes: shell_direct wins ≥3 → promote to auto-skill candidate
-
-### Safety
-- Risk flags block execution unless `--allow-risky` passed (exit 2)
-- Workspace snapshot before run; rollback on failure
-- Graceful SIGINT/SIGTERM handling
+## Test Results (verified before push)
+- `test_conflict_detection.py` — PASS
+- `test_smoke.py` — PASS  
+- `test_skill_direct.py` — PASS
+- `test_property_based.py` — PASS (100% pass rate, 200 iterations)
