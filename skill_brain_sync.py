@@ -1,331 +1,380 @@
 """
 skill_brain_sync.py
--------------------
-The closed-loop bridge: self-improving-system-builder → the-brain.
+--------------------
+The shared bridge between self-improving-system-builder and the-brain KG.
 
-Every skill promotion, demotion, mutation, or audit gate result is:
-  1. Written to the-brain's SQLite knowledge graph as a KG node + edge
-  2. Published to the harmony bus as a `skill_event` envelope
-  3. Appended to a local learning_memory.jsonl mirror (backwards compat)
-  4. Optionally read back from the-brain for context before the next improvement cycle
+This module is imported by:
+  - loop.py                           (SIS, writes on every skill event)
+  - operator_router/brain_skill_router (conductor, reads cached scores)
+  - harmony_subscriber                 (conductor, writes from bus events)
 
-Design principles:
-  - Never crashes the caller. All brain/harmony writes are fire-and-forget with logged fallback.
-  - brain_client.py is used for direct SQLite writes; harmony publisher for bus events.
-  - ModelRouter (from zai-wrap model_gateway) is used for any LLM calls in this module.
-  - Zero circular imports: this module imports from brain_client, not from improve_skill.
+It provides a single, stable API regardless of which end of the stack
+is calling:
+
+  WRITE side (SIS):
+    record_skill_event(name, version, event_type, outcome_score, delta_summary)
+    promote_skill(name, version, ...)
+    demote_skill(name, version, ...)
+
+  READ side (conductor / router):
+    get_all_skill_scores()             → Dict[str, float]
+    get_skill_history(name, limit=10)  → List[Dict]
+    get_top_skills(n=5)                → List[Tuple[str, float]]
+
+Storage layers (in priority order):
+  1. the-brain KG (via MCP socket at BRAIN_MCP_URL, if reachable)
+  2. Local SQLite sidecar (skill_brain_sync.db, always written)
+  3. Harmony bus publish (fire-and-forget, so conductor gets real-time events)
+
+If the-brain MCP is unreachable, the SQLite sidecar is the source of truth.
+The conductor reads the sidecar via get_local_skill_scores() in its own DB.
 """
 
 import json
 import logging
 import os
-import sys
-import time
+import sqlite3
+import threading
 import uuid
-from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Dataclasses
-# ---------------------------------------------------------------------------
-
-@dataclass
-class SkillEvent:
-    """Canonical event envelope for every skill lifecycle moment."""
-    event_id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    event_type: str = ""           # promoted | demoted | mutated | gate_pass | gate_fail | imported
-    skill_name: str = ""
-    skill_version: int = 1
-    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    trigger: str = ""              # what caused this event (task_type, audit gate id, etc.)
-    outcome_score: float = 0.0     # 0.0–1.0 quality signal
-    delta_summary: str = ""        # human-readable description of what changed
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    source_repo: str = "self-improving-system-builder"
-
-
-@dataclass
-class BrainSkillNode:
-    """KG node written to the-brain for each unique skill."""
-    node_id: str = ""
-    skill_name: str = ""
-    current_version: int = 1
-    last_promoted: Optional[str] = None
-    last_demoted: Optional[str] = None
-    promotion_count: int = 0
-    demotion_count: int = 0
-    avg_outcome_score: float = 0.0
-    tags: List[str] = field(default_factory=list)
+_lock = threading.Lock()
+DB_PATH = Path(os.getenv("SKILL_SYNC_DB", "skill_brain_sync.db"))
+_BRAIN_MCP_URL = os.getenv("BRAIN_MCP_URL", "http://localhost:8765")
 
 
 # ---------------------------------------------------------------------------
-# Brain client wrapper (graceful fallback if the-brain is not reachable)
+# SQLite sidecar
 # ---------------------------------------------------------------------------
 
-class BrainWriter:
-    """
-    Thin wrapper around brain_client.py that adds KG node/edge semantics
-    for skill events. Falls back silently to local JSONL if brain is absent.
-    """
+def _conn() -> sqlite3.Connection:
+    c = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+    c.row_factory = sqlite3.Row
+    c.executescript("""
+        CREATE TABLE IF NOT EXISTS skill_events (
+            event_id       TEXT PRIMARY KEY,
+            skill_name     TEXT NOT NULL,
+            skill_version  INTEGER NOT NULL DEFAULT 1,
+            event_type     TEXT NOT NULL,
+            outcome_score  REAL NOT NULL DEFAULT 0.0,
+            delta_summary  TEXT,
+            tags           TEXT,
+            created_at     TEXT NOT NULL
+        );
 
-    def __init__(self):
-        self._client = None
-        self._available = False
-        self._local_mirror = Path(os.getenv("SKILL_BRAIN_MIRROR", "learning_memory.jsonl"))
-        self._init_client()
+        CREATE TABLE IF NOT EXISTS skill_scores (
+            skill_name     TEXT PRIMARY KEY,
+            avg_score      REAL NOT NULL DEFAULT 0.0,
+            peak_score     REAL NOT NULL DEFAULT 0.0,
+            event_count    INTEGER NOT NULL DEFAULT 0,
+            last_event     TEXT NOT NULL,
+            last_updated   TEXT NOT NULL
+        );
 
-    def _init_client(self):
-        try:
-            import brain_client  # noqa: F401 — available in SIS repo
-            self._client = brain_client
-            self._available = True
-            logger.info("BrainWriter: brain_client connected")
-        except ImportError:
-            logger.warning("BrainWriter: brain_client not found — falling back to local JSONL mirror")
-        except Exception as exc:
-            logger.warning("BrainWriter: brain_client init failed: %s", exc)
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
-    def write_skill_event(self, event: SkillEvent) -> bool:
-        """Write a skill event to the-brain KG and harmony bus."""
-        payload = asdict(event)
-        success = False
-
-        # 1. Brain KG write
-        if self._available:
-            try:
-                self._client.upsert_node(
-                    node_type="skill_event",
-                    node_id=f"skill_event:{event.event_id}",
-                    properties=payload,
-                )
-                # Link event → skill node
-                skill_node_id = f"skill:{event.skill_name}"
-                self._client.upsert_node(
-                    node_type="skill",
-                    node_id=skill_node_id,
-                    properties={
-                        "skill_name": event.skill_name,
-                        "last_event_type": event.event_type,
-                        "last_event_ts": event.timestamp,
-                        "last_outcome_score": event.outcome_score,
-                    },
-                )
-                self._client.upsert_edge(
-                    from_id=f"skill_event:{event.event_id}",
-                    to_id=skill_node_id,
-                    edge_type="event_for_skill",
-                )
-                success = True
-                logger.debug("BrainWriter: wrote skill_event %s to KG", event.event_id)
-            except Exception as exc:
-                logger.warning("BrainWriter: KG write failed: %s", exc)
-
-        # 2. Harmony bus publish
-        self._publish_to_harmony(payload)
-
-        # 3. Local JSONL mirror (always)
-        self._append_local(payload)
-
-        return success
-
-    def read_skill_history(self, skill_name: str, limit: int = 20) -> List[Dict]:
-        """
-        Read recent skill events from the-brain for context before next improvement.
-        Falls back to scanning local JSONL if brain unavailable.
-        """
-        if self._available:
-            try:
-                results = self._client.query_nodes(
-                    node_type="skill_event",
-                    filters={"skill_name": skill_name},
-                    order_by="timestamp",
-                    limit=limit,
-                )
-                if results:
-                    return results
-            except Exception as exc:
-                logger.warning("BrainWriter: read_skill_history KG query failed: %s", exc)
-
-        # Fallback: scan local JSONL
-        return self._read_local_history(skill_name, limit)
-
-    def read_all_skill_scores(self) -> Dict[str, float]:
-        """
-        Return {skill_name: avg_outcome_score} for all skills.
-        Used by trigger_dispatcher to weight routing decisions.
-        """
-        if self._available:
-            try:
-                nodes = self._client.query_nodes(node_type="skill", filters={}, limit=500)
-                return {
-                    n["skill_name"]: n.get("last_outcome_score", 0.0)
-                    for n in nodes
-                    if "skill_name" in n
-                }
-            except Exception as exc:
-                logger.warning("BrainWriter: read_all_skill_scores failed: %s", exc)
-
-        # Fallback: aggregate from JSONL
-        scores: Dict[str, List[float]] = {}
-        for record in self._iter_local():
-            name = record.get("skill_name")
-            score = record.get("outcome_score", 0.0)
-            if name:
-                scores.setdefault(name, []).append(score)
-        return {k: sum(v) / len(v) for k, v in scores.items()}
-
-    # ------------------------------------------------------------------
-    # Private helpers
-    # ------------------------------------------------------------------
-
-    def _publish_to_harmony(self, payload: Dict):
-        try:
-            # Try MATRIX harmony_publisher_base first (preferred shared transport)
-            sys.path.insert(0, os.getenv("MATRIX_PATH", "../MATRIX"))
-            from harmony_publisher_base import HarmonyPublisher  # noqa
-            pub = HarmonyPublisher()
-            pub.publish("skill_event", payload)
-        except Exception:
-            pass  # harmony bus is optional; local JSONL is the safety net
-
-    def _append_local(self, payload: Dict):
-        try:
-            with self._local_mirror.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(payload) + "\n")
-        except Exception as exc:
-            logger.warning("BrainWriter: local JSONL append failed: %s", exc)
-
-    def _read_local_history(self, skill_name: str, limit: int) -> List[Dict]:
-        results = [
-            r for r in self._iter_local()
-            if r.get("skill_name") == skill_name
-        ]
-        return results[-limit:]
-
-    def _iter_local(self):
-        if not self._local_mirror.exists():
-            return
-        with self._local_mirror.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    try:
-                        yield json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
+        CREATE INDEX IF NOT EXISTS idx_skill_events_name
+            ON skill_events(skill_name);
+        CREATE INDEX IF NOT EXISTS idx_skill_scores_avg
+            ON skill_scores(avg_score DESC);
+    """)
+    c.commit()
+    return c
 
 
 # ---------------------------------------------------------------------------
-# Module-level singleton (import and use directly)
+# Internal helpers
 # ---------------------------------------------------------------------------
 
-_brain_writer: Optional[BrainWriter] = None
-
-
-def get_brain_writer() -> BrainWriter:
-    global _brain_writer
-    if _brain_writer is None:
-        _brain_writer = BrainWriter()
-    return _brain_writer
-
-
-# ---------------------------------------------------------------------------
-# Convenience functions (called by improve_skill.py and trigger_dispatcher.py)
-# ---------------------------------------------------------------------------
-
-def record_skill_promoted(
+def _upsert_skill_score(
+    conn: sqlite3.Connection,
     skill_name: str,
-    version: int,
     outcome_score: float,
-    delta_summary: str,
-    trigger: str = "improve_skill",
-    metadata: Optional[Dict] = None,
-) -> SkillEvent:
-    event = SkillEvent(
-        event_type="promoted",
+    event_type: str,
+    now: str,
+):
+    """Update rolling avg and peak score for a skill."""
+    existing = conn.execute(
+        "SELECT avg_score, peak_score, event_count FROM skill_scores WHERE skill_name=?",
+        (skill_name,)
+    ).fetchone()
+
+    if existing:
+        old_avg = existing["avg_score"]
+        old_peak = existing["peak_score"]
+        count = existing["event_count"]
+        # Exponential moving average (alpha=0.3) — recent events weighted more
+        new_avg = 0.7 * old_avg + 0.3 * outcome_score
+        new_peak = max(old_peak, outcome_score)
+        conn.execute(
+            "UPDATE skill_scores SET avg_score=?, peak_score=?, event_count=?, "
+            "last_event=?, last_updated=? WHERE skill_name=?",
+            (new_avg, new_peak, count + 1, event_type, now, skill_name),
+        )
+    else:
+        conn.execute(
+            "INSERT INTO skill_scores "
+            "(skill_name, avg_score, peak_score, event_count, last_event, last_updated) "
+            "VALUES (?, ?, ?, 1, ?, ?)",
+            (skill_name, outcome_score, outcome_score, event_type, now),
+        )
+
+
+def _publish_to_harmony(event_id: str, skill_name: str, skill_version: int,
+                        event_type: str, outcome_score: float, delta_summary: str):
+    """Fire-and-forget harmony bus publish. Never raises."""
+    try:
+        matrix_path = os.getenv("MATRIX_PATH", "../MATRIX")
+        import sys
+        sys.path.insert(0, matrix_path)
+        from harmony_publisher_base import HarmonyPublisher  # type: ignore
+        pub = HarmonyPublisher()
+        pub.publish("skill_event", {
+            "event_id": event_id,
+            "skill_name": skill_name,
+            "skill_version": skill_version,
+            "event_type": event_type,
+            "outcome_score": outcome_score,
+            "delta_summary": delta_summary,
+            "source_repo": "self-improving-system-builder",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+    except Exception as exc:
+        logger.debug("skill_brain_sync: harmony publish failed (non-fatal): %s", exc)
+
+
+def _publish_to_brain(event_id: str, skill_name: str, skill_version: int,
+                      event_type: str, outcome_score: float, delta_summary: str):
+    """Write skill event to the-brain KG via MCP. Never raises."""
+    try:
+        import urllib.request
+        payload = json.dumps({
+            "operation": "kg_write",
+            "node_type": "skill",
+            "node_id": f"skill:{skill_name}:v{skill_version}",
+            "properties": {
+                "event_type": event_type,
+                "outcome_score": outcome_score,
+                "delta_summary": delta_summary,
+                "event_id": event_id,
+                "source": "self-improving-system-builder",
+            },
+        }).encode()
+        req = urllib.request.Request(
+            f"{_BRAIN_MCP_URL}/kg/write",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            if resp.status == 200:
+                logger.debug("skill_brain_sync: brain KG write OK for %s", skill_name)
+    except Exception as exc:
+        logger.debug("skill_brain_sync: brain KG write failed (non-fatal): %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# Public WRITE API
+# ---------------------------------------------------------------------------
+
+def record_skill_event(
+    skill_name: str,
+    skill_version: int = 1,
+    event_type: str = "evaluated",
+    outcome_score: float = 0.0,
+    delta_summary: str = "",
+    tags: Optional[List[str]] = None,
+) -> str:
+    """
+    Record a skill lifecycle event (the core write call).
+
+    Args:
+        skill_name:     Short identifier, e.g. "code_review" or "deploy_agent".
+        skill_version:  Monotonically increasing version int from skill.md YAML.
+        event_type:     One of: promoted, demoted, evaluated, audited, patched.
+        outcome_score:  Float in [0.0, 1.0]. 1.0 = perfect outcome.
+        delta_summary:  Single-line human-readable description of what changed.
+        tags:           Optional list of string tags for filtering.
+
+    Returns:
+        event_id (str UUID) for provenance tracking.
+    """
+    event_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    tags_str = json.dumps(tags or [])
+
+    with _lock:
+        try:
+            conn = _conn()
+            conn.execute(
+                "INSERT INTO skill_events "
+                "(event_id, skill_name, skill_version, event_type, outcome_score, "
+                "delta_summary, tags, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (event_id, skill_name, skill_version, event_type,
+                 outcome_score, delta_summary, tags_str, now),
+            )
+            _upsert_skill_score(conn, skill_name, outcome_score, event_type, now)
+            conn.commit()
+            conn.close()
+            logger.info(
+                "skill_brain_sync: recorded %s event for '%s' v%d score=%.3f",
+                event_type, skill_name, skill_version, outcome_score,
+            )
+        except Exception as exc:
+            logger.warning("skill_brain_sync: SQLite write failed: %s", exc)
+
+    # Async publish (both targets, non-blocking)
+    t1 = threading.Thread(
+        target=_publish_to_harmony,
+        args=(event_id, skill_name, skill_version, event_type, outcome_score, delta_summary),
+        daemon=True,
+    )
+    t2 = threading.Thread(
+        target=_publish_to_brain,
+        args=(event_id, skill_name, skill_version, event_type, outcome_score, delta_summary),
+        daemon=True,
+    )
+    t1.start()
+    t2.start()
+
+    return event_id
+
+
+def promote_skill(
+    skill_name: str,
+    skill_version: int,
+    outcome_score: float,
+    delta_summary: str = "",
+    tags: Optional[List[str]] = None,
+) -> str:
+    """Convenience wrapper: record a 'promoted' event."""
+    return record_skill_event(
         skill_name=skill_name,
-        skill_version=version,
-        trigger=trigger,
+        skill_version=skill_version,
+        event_type="promoted",
         outcome_score=outcome_score,
         delta_summary=delta_summary,
-        metadata=metadata or {},
+        tags=tags,
     )
-    get_brain_writer().write_skill_event(event)
-    logger.info("[skill_brain_sync] PROMOTED %s v%d score=%.3f", skill_name, version, outcome_score)
-    return event
 
 
-def record_skill_demoted(
+def demote_skill(
     skill_name: str,
-    version: int,
+    skill_version: int,
     outcome_score: float,
-    reason: str,
-    trigger: str = "audit",
-) -> SkillEvent:
-    event = SkillEvent(
+    delta_summary: str = "",
+    tags: Optional[List[str]] = None,
+) -> str:
+    """Convenience wrapper: record a 'demoted' event."""
+    return record_skill_event(
+        skill_name=skill_name,
+        skill_version=skill_version,
         event_type="demoted",
-        skill_name=skill_name,
-        skill_version=version,
-        trigger=trigger,
         outcome_score=outcome_score,
-        delta_summary=reason,
+        delta_summary=delta_summary,
+        tags=tags,
     )
-    get_brain_writer().write_skill_event(event)
-    logger.info("[skill_brain_sync] DEMOTED %s v%d reason=%s", skill_name, version, reason)
-    return event
 
 
-def record_gate_result(
+def audit_skill(
     skill_name: str,
-    gate_id: str,
-    passed: bool,
-    score: float,
-    detail: str = "",
-) -> SkillEvent:
-    event = SkillEvent(
-        event_type="gate_pass" if passed else "gate_fail",
+    skill_version: int,
+    outcome_score: float,
+    delta_summary: str = "",
+    tags: Optional[List[str]] = None,
+) -> str:
+    """Convenience wrapper: record an 'audited' event (IDKWIDK gate pass/fail)."""
+    return record_skill_event(
         skill_name=skill_name,
-        trigger=gate_id,
-        outcome_score=score,
-        delta_summary=detail,
+        skill_version=skill_version,
+        event_type="audited",
+        outcome_score=outcome_score,
+        delta_summary=delta_summary,
+        tags=tags,
     )
-    get_brain_writer().write_skill_event(event)
-    return event
 
 
-def record_skill_mutated(
-    skill_name: str,
-    version: int,
-    mutation_summary: str,
-    model_used: str = "",
-    score: float = 0.0,
-) -> SkillEvent:
-    event = SkillEvent(
-        event_type="mutated",
-        skill_name=skill_name,
-        skill_version=version,
-        trigger="improve_skill",
-        outcome_score=score,
-        delta_summary=mutation_summary,
-        metadata={"model_used": model_used},
-    )
-    get_brain_writer().write_skill_event(event)
-    return event
-
-
-def get_skill_history(skill_name: str, limit: int = 20) -> List[Dict]:
-    """Pull recent history for a skill from the-brain (for context injection)."""
-    return get_brain_writer().read_skill_history(skill_name, limit)
-
+# ---------------------------------------------------------------------------
+# Public READ API
+# ---------------------------------------------------------------------------
 
 def get_all_skill_scores() -> Dict[str, float]:
-    """Return {skill_name: score} dict for routing weight decisions."""
-    return get_brain_writer().read_all_skill_scores()
+    """
+    Return current avg_score for every tracked skill.
+    Used by BrainSkillRouter in conductor.
+    """
+    try:
+        conn = _conn()
+        rows = conn.execute(
+            "SELECT skill_name, avg_score FROM skill_scores ORDER BY avg_score DESC"
+        ).fetchall()
+        conn.close()
+        return {row["skill_name"]: row["avg_score"] for row in rows}
+    except Exception as exc:
+        logger.warning("skill_brain_sync.get_all_skill_scores: %s", exc)
+        return {}
+
+
+def get_skill_history(
+    skill_name: str,
+    limit: int = 10,
+    event_type_filter: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Return up to `limit` most recent events for a skill, newest first.
+    Used by BrainSkillRouter to build skill_history_summary for prompt injection.
+    """
+    try:
+        conn = _conn()
+        if event_type_filter:
+            rows = conn.execute(
+                "SELECT * FROM skill_events WHERE skill_name=? AND event_type=? "
+                "ORDER BY created_at DESC LIMIT ?",
+                (skill_name, event_type_filter, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM skill_events WHERE skill_name=? "
+                "ORDER BY created_at DESC LIMIT ?",
+                (skill_name, limit),
+            ).fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+    except Exception as exc:
+        logger.warning("skill_brain_sync.get_skill_history: %s", exc)
+        return []
+
+
+def get_top_skills(n: int = 5) -> List[Tuple[str, float]]:
+    """Return the top-n skills by avg_score as (name, score) tuples."""
+    scores = get_all_skill_scores()
+    return sorted(scores.items(), key=lambda x: x[1], reverse=True)[:n]
+
+
+def get_skill_score(skill_name: str) -> float:
+    """Return the current avg_score for a single skill (0.0 if not found)."""
+    return get_all_skill_scores().get(skill_name, 0.0)
+
+
+def get_skill_summary(skill_name: str) -> Dict[str, Any]:
+    """
+    Return a full summary dict for a skill: avg_score, peak_score,
+    event_count, last_event, last_updated, recent_history (last 5).
+    """
+    try:
+        conn = _conn()
+        row = conn.execute(
+            "SELECT * FROM skill_scores WHERE skill_name=?", (skill_name,)
+        ).fetchone()
+        conn.close()
+        if not row:
+            return {"skill_name": skill_name, "found": False}
+        result = dict(row)
+        result["recent_history"] = get_skill_history(skill_name, limit=5)
+        result["found"] = True
+        return result
+    except Exception as exc:
+        logger.warning("skill_brain_sync.get_skill_summary: %s", exc)
+        return {"skill_name": skill_name, "found": False}
